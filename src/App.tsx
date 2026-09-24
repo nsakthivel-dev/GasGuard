@@ -13,6 +13,7 @@ import {
   fetchDashboardOverview, 
   fetchDeviceReadings, 
   fetchDeviceSettings,
+  fetchLatestTelemetry,
   acknowledgeAlertInCloud, 
   resolveAlertInCloud, 
   subscribeToRealtime,
@@ -29,7 +30,8 @@ import {
   DeviceRecord,
   DeviceEvent,
   DashboardStats,
-  SensorReading 
+  SensorReading,
+  GasStatus
 } from './types';
 import { 
   ShieldCheck, 
@@ -256,31 +258,66 @@ export function App() {
       },
     });
 
-    // 4. Precise 1-second heartbeat check:
-    // Derives device online status: last_seen <= 60s -> ONLINE, > 60s -> OFFLINE
-    const heartbeatInterval = setInterval(() => {
-      setDevices((prev) => {
-        let changed = false;
-        const next = prev.map((d): DeviceRecord => {
-          const online = isDeviceOnline(d.last_seen, heartbeatTimeout);
-          if (online !== d.isOnlineComputed || (online && d.status !== 'online') || (!online && d.status !== 'offline')) {
-            changed = true;
-            return {
-              ...d,
-              status: online ? 'online' : 'offline',
-              isOnlineComputed: online,
-            };
-          }
-          return d;
-        });
-        return changed ? next : prev;
-      });
+    // 4. Fast 1-second telemetry refresh loop (targeted query on gas_readings & device last_seen only)
+    let isFetchingTelemetry = false;
+    const telemetryInterval = setInterval(async () => {
+      if (isFetchingTelemetry) return;
+      isFetchingTelemetry = true;
+      try {
+        const targetId = selectedDeviceId || 'GAS-000001';
+        const { reading: latest, lastSeen } = await fetchLatestTelemetry(targetId);
+
+        if (latest) {
+          setReading(latest);
+          setReadingsHistory((prev) => {
+            if (prev.length === 0 || prev[prev.length - 1].id !== latest.id) {
+              const next = [...prev, latest];
+              return next.length > 300 ? next.slice(-300) : next;
+            }
+            return prev;
+          });
+          alertEngine.processReading(latest);
+        }
+
+        // Dynamically update device online status strictly based on last_seen (<=60s ONLINE, >60s OFFLINE)
+        setDevices((prev) =>
+          prev.map((d): DeviceRecord => {
+            if (areDeviceIdsEqual(d.id, targetId)) {
+              const effectiveSeen = lastSeen || d.last_seen;
+              const online = isDeviceOnline(effectiveSeen, heartbeatTimeout);
+              return {
+                ...d,
+                last_seen: effectiveSeen || d.last_seen,
+                status: online ? 'online' : 'offline',
+                isOnlineComputed: online,
+                currentGas: latest ? (latest.gas_value ?? latest.gas) : d.currentGas,
+                currentStatus: (latest?.status || d.currentStatus || 'NORMAL') as GasStatus,
+                latestReading: latest || d.latestReading,
+              };
+            } else {
+              const online = isDeviceOnline(d.last_seen, heartbeatTimeout);
+              if (online !== d.isOnlineComputed || (online && d.status !== 'online') || (!online && d.status !== 'offline')) {
+                return {
+                  ...d,
+                  status: online ? 'online' : 'offline',
+                  isOnlineComputed: online,
+                };
+              }
+              return d;
+            }
+          })
+        );
+      } catch (err) {
+        console.warn('[App] Telemetry tick error:', err);
+      } finally {
+        isFetchingTelemetry = false;
+      }
     }, 1000);
 
-    // 5. Periodic cloud poll (every 3 seconds) for background telemetry sync
-    const pollInterval = setInterval(() => {
+    // 5. Low-frequency background sync (every 30 seconds) for alerts, settings & overview
+    const fullSyncInterval = setInterval(() => {
       loadCloudData(false);
-    }, 3000);
+    }, 30000);
 
     // 6. Sensor service hook for optional direct hardware (WebSerial)
     sensorService.onReading((localReading) => {
@@ -300,8 +337,8 @@ export function App() {
 
     return () => {
       unsubscribe();
-      clearInterval(heartbeatInterval);
-      clearInterval(pollInterval);
+      clearInterval(telemetryInterval);
+      clearInterval(fullSyncInterval);
     };
   }, [loadCloudData, heartbeatTimeout, selectedDeviceId]);
 

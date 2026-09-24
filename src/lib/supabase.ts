@@ -253,6 +253,77 @@ export async function deleteDevice(id: string) {
 // 2. Gas Readings & Telemetry
 // ==============================================================================
 
+/**
+ * Fast optimized query for live telemetry refresh:
+ * Reads ONLY the latest record from gas_readings and device last_seen.
+ * Avoids loading alerts, events, settings, or full history on every 1-second tick.
+ */
+export async function fetchLatestTelemetry(deviceId: string = 'GAS-000001'): Promise<{
+  reading: SensorReading | null;
+  lastSeen: string | null;
+  deviceStatus: 'online' | 'offline';
+}> {
+  const supabase = getSupabaseClient();
+  if (!supabase) return { reading: null, lastSeen: null, deviceStatus: 'offline' };
+
+  try {
+    const normId = normalizeDeviceId(deviceId);
+
+    // Fast targeted parallel lookup: latest single reading and device heartbeat
+    const [readingRes, deviceRes] = await Promise.all([
+      supabase
+        .from('gas_readings')
+        .select('id, device_id, gas_value, status, recorded_at')
+        .or(`device_id.eq.${normId},device_id.eq.${deviceId}`)
+        .order('recorded_at', { ascending: false })
+        .limit(1)
+        .maybeSingle(),
+      supabase
+        .from('devices')
+        .select('id, name, last_seen, status')
+        .or(`id.eq.${normId},id.eq.${deviceId}`)
+        .limit(1)
+        .maybeSingle(),
+    ]);
+
+    const readingRow = readingRes.data;
+    const deviceRow = deviceRes.data;
+
+    let effectiveLastSeen = deviceRow?.last_seen || null;
+    if (readingRow?.recorded_at) {
+      if (!effectiveLastSeen || new Date(readingRow.recorded_at).getTime() > new Date(effectiveLastSeen).getTime()) {
+        effectiveLastSeen = readingRow.recorded_at;
+      }
+    }
+
+    const online = isDeviceOnline(effectiveLastSeen, 60);
+
+    let reading: SensorReading | null = null;
+    if (readingRow) {
+      const gas = readingRow.gas_value ?? 0;
+      reading = {
+        id: readingRow.id,
+        gas: gas,
+        gas_value: gas,
+        status: (readingRow.status || 'NORMAL') as GasStatus,
+        timestamp: new Date(readingRow.recorded_at).getTime(),
+        recorded_at: readingRow.recorded_at,
+        deviceId: readingRow.device_id,
+        device_id: readingRow.device_id,
+      };
+    }
+
+    return {
+      reading,
+      lastSeen: effectiveLastSeen,
+      deviceStatus: online ? 'online' : 'offline',
+    };
+  } catch (err) {
+    console.warn('[Supabase] fetchLatestTelemetry error:', err);
+    return { reading: null, lastSeen: null, deviceStatus: 'offline' };
+  }
+}
+
 export async function fetchDeviceReadings(
   deviceId?: string, 
   limit: number = 200, 
