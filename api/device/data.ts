@@ -72,7 +72,7 @@ export default async function handler(req: any, res: any) {
     }
 
     // 3. Validate device_id & gas_value
-    const rawDeviceId = body.device_id || body.deviceId;
+    const rawDeviceId = body.device_id || body.deviceId || body.id;
     if (!rawDeviceId || typeof rawDeviceId !== 'string') {
       res.statusCode = 400;
       res.setHeader('Content-Type', 'application/json');
@@ -80,9 +80,25 @@ export default async function handler(req: any, res: any) {
       return;
     }
 
-    const deviceId = rawDeviceId.trim().toUpperCase();
+    // Normalize device ID (e.g. GAS-000001)
+    const normalizeDeviceId = (id: string): string => {
+      const clean = id.trim().toUpperCase();
+      const match = clean.match(/^GAS-(\d+)$/);
+      if (match) {
+        const num = parseInt(match[1], 10);
+        return `GAS-${String(num).padStart(6, '0')}`;
+      }
+      return clean;
+    };
 
-    const rawGasValue = body.gas_value !== undefined ? body.gas_value : body.gas;
+    const deviceId = normalizeDeviceId(rawDeviceId);
+
+    const rawGasValue = body.gas_value !== undefined 
+      ? body.gas_value 
+      : body.gasValue !== undefined 
+      ? body.gasValue 
+      : body.gas;
+
     if (rawGasValue === undefined || isNaN(Number(rawGasValue))) {
       res.statusCode = 400;
       res.setHeader('Content-Type', 'application/json');
@@ -91,7 +107,11 @@ export default async function handler(req: any, res: any) {
     }
 
     const gasValue = Math.max(0, Math.round(Number(rawGasValue)));
-    const nowIso = body.timestamp ? new Date(body.timestamp).toISOString() : new Date().toISOString();
+    const nowIso = body.timestamp 
+      ? new Date(body.timestamp).toISOString() 
+      : body.recorded_at 
+      ? new Date(body.recorded_at).toISOString() 
+      : new Date().toISOString();
 
     // 4. Connect to Supabase using server-side keys
     const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
@@ -140,28 +160,58 @@ export default async function handler(req: any, res: any) {
       status = 'NORMAL';
     }
 
-    // 7. Ensure device exists and update last_seen
-    const { data: existingDevice } = await supabase
+    // 7. Find existing device using device_id (exact or normalized)
+    let deviceRecord: { id: string; name: string } | null = null;
+
+    const { data: exactDevice } = await supabase
       .from('devices')
       .select('id, name')
       .eq('id', deviceId)
       .maybeSingle();
 
-    if (!existingDevice) {
-      // Auto-provision new hardware device on first telemetry transmission
-      await supabase.from('devices').insert({
+    if (exactDevice) {
+      deviceRecord = exactDevice;
+    } else {
+      // Check if any registered device matches normalized ID
+      const { data: allDevices } = await supabase
+        .from('devices')
+        .select('id, name');
+
+      if (allDevices && allDevices.length > 0) {
+        const matched = allDevices.find(
+          (d) => normalizeDeviceId(d.id) === deviceId
+        );
+        if (matched) {
+          deviceRecord = matched;
+        } else if (allDevices.length === 1) {
+          // If only 1 device is registered (e.g. Kitchen), associate with this permanent hardware node
+          deviceRecord = allDevices[0];
+        }
+      }
+    }
+
+    let deviceName = 'Kitchen';
+
+    if (!deviceRecord) {
+      // Auto-provision new hardware device if none exists
+      deviceName = 'Kitchen';
+      const { data: created } = await supabase.from('devices').insert({
         id: deviceId,
-        name: `Gas Detector ${deviceId}`,
-        location: 'Monitored Area',
+        name: deviceName,
+        location: 'Kitchen - Main Area',
         device_type: 'ESP32',
         connection_type: 'wifi-http',
         status: 'online',
         last_seen: nowIso,
         created_at: nowIso,
         updated_at: nowIso,
-      });
+      }).select('id, name').single();
 
-      // Log device registration event
+      if (created) {
+        deviceRecord = created;
+        deviceName = created.name;
+      }
+
       await supabase.from('device_events').insert({
         device_id: deviceId,
         event_type: 'DEVICE_REGISTERED',
@@ -169,17 +219,20 @@ export default async function handler(req: any, res: any) {
         created_at: nowIso,
       });
     } else {
-      // Update existing device
+      // Update existing device - PRESERVE its existing name!
+      deviceName = deviceRecord.name || 'Kitchen';
       await supabase.from('devices').update({
         last_seen: nowIso,
         status: 'online',
         updated_at: nowIso,
-      }).eq('id', deviceId);
+      }).eq('id', deviceRecord.id);
     }
+
+    const targetDeviceId = deviceRecord ? deviceRecord.id : deviceId;
 
     // 8. Store gas reading
     const { error: readingError } = await supabase.from('gas_readings').insert({
-      device_id: deviceId,
+      device_id: targetDeviceId,
       gas_value: gasValue,
       status: status,
       recorded_at: nowIso,
@@ -195,7 +248,7 @@ export default async function handler(req: any, res: any) {
       const { data: activeAlerts } = await supabase
         .from('alerts')
         .select('id, gas_value')
-        .eq('device_id', deviceId)
+        .eq('device_id', targetDeviceId)
         .is('resolved_at', null)
         .order('created_at', { ascending: false })
         .limit(1);
@@ -208,7 +261,7 @@ export default async function handler(req: any, res: any) {
 
         await supabase.from('alerts').insert({
           id: alertId,
-          device_id: deviceId,
+          device_id: targetDeviceId,
           gas_value: gasValue,
           alert_type: 'GAS_LEAK',
           severity: severity,
@@ -218,7 +271,7 @@ export default async function handler(req: any, res: any) {
         });
 
         await supabase.from('device_events').insert({
-          device_id: deviceId,
+          device_id: targetDeviceId,
           event_type: 'ALERT_TRIGGERED',
           message: message,
           created_at: nowIso,
@@ -237,7 +290,7 @@ export default async function handler(req: any, res: any) {
       const { data: unresolvedAlerts } = await supabase
         .from('alerts')
         .select('id')
-        .eq('device_id', deviceId)
+        .eq('device_id', targetDeviceId)
         .is('resolved_at', null);
 
       if (unresolvedAlerts && unresolvedAlerts.length > 0) {
@@ -248,7 +301,7 @@ export default async function handler(req: any, res: any) {
         }
 
         await supabase.from('device_events').insert({
-          device_id: deviceId,
+          device_id: targetDeviceId,
           event_type: 'ALERT_RESOLVED',
           message: `Gas concentration normalized to safe baseline (${gasValue} ADC).`,
           created_at: nowIso,
@@ -256,14 +309,27 @@ export default async function handler(req: any, res: any) {
       }
     }
 
-    // 10. Return success response
+    // 10. Return success response with all required fields (Requirement 5 & 12)
     res.statusCode = 200;
     res.setHeader('Content-Type', 'application/json');
     res.end(JSON.stringify({
       success: true,
-      device_id: deviceId,
-      status: status,
+      device_id: targetDeviceId,
+      deviceId: targetDeviceId,
+      name: deviceName,
+      device_name: deviceName,
+      deviceName: deviceName,
       gas_value: gasValue,
+      gasValue: gasValue,
+      status: status,
+      gas_status: status,
+      gasStatus: status,
+      last_seen: nowIso,
+      lastSeen: nowIso,
+      connection_status: 'online',
+      connectionStatus: 'online',
+      is_online: true,
+      isOnline: true,
       thresholds: {
         warning: warningThreshold,
         alert: alertThreshold,

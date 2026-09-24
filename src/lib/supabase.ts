@@ -72,13 +72,39 @@ export function resetSupabaseClient() {
 }
 
 /**
- * Computes whether a device is currently ONLINE based on its last_seen heartbeat timestamp
+ * Normalizes device ID to canonical uppercase formatted ID (e.g. 'GAS-000001')
+ */
+export function normalizeDeviceId(id?: string | null): string {
+  if (!id) return 'GAS-000001';
+  const clean = id.trim().toUpperCase();
+  const match = clean.match(/^GAS-(\d+)$/);
+  if (match) {
+    const num = parseInt(match[1], 10);
+    return `GAS-${String(num).padStart(6, '0')}`;
+  }
+  return clean;
+}
+
+/**
+ * Checks if two device IDs refer to the same hardware device
+ */
+export function areDeviceIdsEqual(id1?: string | null, id2?: string | null): boolean {
+  if (!id1 || !id2) return false;
+  return normalizeDeviceId(id1) === normalizeDeviceId(id2);
+}
+
+/**
+ * Computes whether a device is currently ONLINE based on its last_seen heartbeat timestamp.
+ * Strictly derives status from: last_seen <= 60 seconds ago -> ONLINE; last_seen > 60 seconds ago -> OFFLINE.
  */
 export function isDeviceOnline(lastSeen?: string | null, timeoutSeconds: number = 60): boolean {
   if (!lastSeen) return false;
   const lastTime = new Date(lastSeen).getTime();
   if (isNaN(lastTime)) return false;
-  return Date.now() - lastTime <= timeoutSeconds * 1000;
+  const elapsedMs = Date.now() - lastTime;
+  // Account for slight future clock drift (up to 60s) between client and server
+  if (elapsedMs < 0 && elapsedMs >= -60000) return true;
+  return elapsedMs >= 0 && elapsedMs <= timeoutSeconds * 1000;
 }
 
 // ==============================================================================
@@ -100,16 +126,20 @@ export async function fetchDevices(timeoutSeconds: number = 60): Promise<DeviceR
       return [];
     }
 
-    // Get the most recent reading for each device
+    // Get the most recent readings for devices
     const { data: latestReadings } = await supabase
       .from('gas_readings')
       .select('*')
       .order('recorded_at', { ascending: false })
-      .limit(50);
+      .limit(100);
 
     const readingMap = new Map<string, any>();
     if (latestReadings) {
       for (const r of latestReadings) {
+        const normId = normalizeDeviceId(r.device_id);
+        if (!readingMap.has(normId)) {
+          readingMap.set(normId, r);
+        }
         if (!readingMap.has(r.device_id)) {
           readingMap.set(r.device_id, r);
         }
@@ -117,29 +147,43 @@ export async function fetchDevices(timeoutSeconds: number = 60): Promise<DeviceR
     }
 
     return devicesData.map((d: any) => {
-      const isOnline = isDeviceOnline(d.last_seen, timeoutSeconds);
-      const latest = readingMap.get(d.id);
+      const normId = normalizeDeviceId(d.id);
+      const latest = readingMap.get(normId) || readingMap.get(d.id);
+
+      // Effective last seen: newer of device.last_seen and latest reading recorded_at
+      let effectiveLastSeen = d.last_seen;
+      if (latest?.recorded_at) {
+        if (!effectiveLastSeen || new Date(latest.recorded_at).getTime() > new Date(effectiveLastSeen).getTime()) {
+          effectiveLastSeen = latest.recorded_at;
+        }
+      }
+
+      const isOnline = isDeviceOnline(effectiveLastSeen, timeoutSeconds);
+      const currentGas = latest ? (latest.gas_value ?? latest.gas) : undefined;
+      const currentStatus = latest ? latest.status : (isOnline ? 'NORMAL' : 'OFFLINE');
 
       return {
         id: d.id,
         name: d.name,
-        location: d.location || 'Unassigned',
+        location: d.location || 'Kitchen - Main Area',
         device_type: d.device_type || 'ESP32',
         connection_type: d.connection_type || 'wifi-http',
         status: isOnline ? 'online' : 'offline',
-        last_seen: d.last_seen,
+        last_seen: effectiveLastSeen,
         created_at: d.created_at,
         updated_at: d.updated_at,
         isOnlineComputed: isOnline,
-        currentGas: latest ? latest.gas_value : undefined,
-        currentStatus: latest ? latest.status : undefined,
+        currentGas,
+        currentStatus,
         latestReading: latest ? {
           id: latest.id,
-          gas: latest.gas_value,
+          gas: currentGas,
+          gas_value: currentGas,
           status: latest.status,
           timestamp: new Date(latest.recorded_at).getTime(),
           recorded_at: latest.recorded_at,
-          deviceId: latest.device_id,
+          deviceId: d.id,
+          device_id: d.id,
         } : null,
       };
     });
@@ -225,7 +269,12 @@ export async function fetchDeviceReadings(
       .limit(limit);
 
     if (deviceId && deviceId !== 'ALL') {
-      query = query.eq('device_id', deviceId);
+      const normId = normalizeDeviceId(deviceId);
+      if (normId !== deviceId) {
+        query = query.or(`device_id.eq.${deviceId},device_id.eq.${normId}`);
+      } else {
+        query = query.or(`device_id.eq.${deviceId},device_id.eq.GAS-00001`);
+      }
     }
 
     if (hours && hours > 0) {
@@ -237,16 +286,19 @@ export async function fetchDeviceReadings(
     if (error || !data) return [];
 
     // Return in ascending time order for charting
-    return data.reverse().map((r: any) => ({
-      id: r.id,
-      gas: r.gas_value,
-      gas_value: r.gas_value,
-      status: r.status as GasStatus,
-      timestamp: new Date(r.recorded_at).getTime(),
-      recorded_at: r.recorded_at,
-      deviceId: r.device_id,
-      device_id: r.device_id,
-    }));
+    return data.reverse().map((r: any) => {
+      const gas = r.gas_value ?? r.gas ?? 0;
+      return {
+        id: r.id,
+        gas: gas,
+        gas_value: gas,
+        status: (r.status || 'NORMAL') as GasStatus,
+        timestamp: new Date(r.recorded_at).getTime(),
+        recorded_at: r.recorded_at,
+        deviceId: r.device_id,
+        device_id: r.device_id,
+      };
+    });
   } catch {
     return [];
   }

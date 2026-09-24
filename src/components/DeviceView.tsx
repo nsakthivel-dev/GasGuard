@@ -107,8 +107,9 @@ export const DeviceView: React.FC<DeviceViewProps> = ({
 
       if (!matchesSearch) return false;
 
-      if (statusFilter === 'online' && !d.isOnlineComputed) return false;
-      if (statusFilter === 'offline' && d.isOnlineComputed) return false;
+      const online = Boolean(d.isOnlineComputed ?? isDeviceOnline(d.last_seen));
+      if (statusFilter === 'online' && !online) return false;
+      if (statusFilter === 'offline' && online) return false;
 
       return true;
     });
@@ -289,10 +290,10 @@ export const DeviceView: React.FC<DeviceViewProps> = ({
       {filteredDevices.length > 0 ? (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {filteredDevices.map((dev) => {
-            const isOnline = dev.isOnlineComputed;
+            const isOnline = Boolean(dev.isOnlineComputed ?? isDeviceOnline(dev.last_seen));
             const isAlert = dev.currentStatus === 'ALERT';
             const isWarning = dev.currentStatus === 'WARNING';
-            const gas = dev.currentGas ?? '--';
+            const gas = isOnline ? (dev.currentGas ?? '--') : '--';
 
             return (
               <div
@@ -456,27 +457,34 @@ export const DeviceView: React.FC<DeviceViewProps> = ({
             {/* Modal Header */}
             <div className="flex items-start justify-between pb-4 border-b border-slate-800">
               <div className="flex items-center gap-3">
-                <div className={`w-12 h-12 rounded-2xl flex items-center justify-center font-bold ${
-                  detailDevice.isOnlineComputed
-                    ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
-                    : 'bg-slate-800 text-slate-400'
-                }`}>
-                  <Cpu className="w-6 h-6" />
-                </div>
-                <div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs font-mono font-bold text-amber-400">
-                      {detailDevice.id}
-                    </span>
-                    <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
-                      detailDevice.isOnlineComputed ? 'bg-emerald-500/20 text-emerald-400' : 'bg-slate-800 text-slate-400'
-                    }`}>
-                      {detailDevice.isOnlineComputed ? 'Online' : 'Offline'}
-                    </span>
-                  </div>
-                  <h3 className="font-black text-lg text-slate-100">{detailDevice.name}</h3>
-                  <p className="text-xs text-slate-400">{detailDevice.location}</p>
-                </div>
+                {(() => {
+                  const isDetailOnline = Boolean(detailDevice.isOnlineComputed ?? isDeviceOnline(detailDevice.last_seen));
+                  return (
+                    <>
+                      <div className={`w-12 h-12 rounded-2xl flex items-center justify-center font-bold ${
+                        isDetailOnline
+                          ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+                          : 'bg-slate-800 text-slate-400'
+                      }`}>
+                        <Cpu className="w-6 h-6" />
+                      </div>
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-mono font-bold text-amber-400">
+                            {detailDevice.id}
+                          </span>
+                          <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
+                            isDetailOnline ? 'bg-emerald-500/20 text-emerald-400' : 'bg-slate-800 text-slate-400'
+                          }`}>
+                            {isDetailOnline ? 'Online' : 'Offline'}
+                          </span>
+                        </div>
+                        <h3 className="font-black text-lg text-slate-100">{detailDevice.name}</h3>
+                        <p className="text-xs text-slate-400">{detailDevice.location}</p>
+                      </div>
+                    </>
+                  );
+                })()}
               </div>
 
               <button

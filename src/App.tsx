@@ -17,7 +17,9 @@ import {
   resolveAlertInCloud, 
   subscribeToRealtime,
   isDeviceOnline,
-  isSupabaseConfigured
+  isSupabaseConfigured,
+  normalizeDeviceId,
+  areDeviceIdsEqual
 } from './lib/supabase';
 import { 
   AlertEngineState, 
@@ -43,7 +45,7 @@ import { audioAlarm } from './services/audioAlarm';
 export function App() {
   const [activeTab, setActiveTab] = useState<TabType>('home');
   const [devices, setDevices] = useState<DeviceRecord[]>([]);
-  const [selectedDeviceId, setSelectedDeviceId] = useState<string>('');
+  const [selectedDeviceId, setSelectedDeviceId] = useState<string>('GAS-000001');
   const [reading, setReading] = useState<SensorReading | null>(null);
   const [readingsHistory, setReadingsHistory] = useState<SensorReading[]>([]);
   const [deviceInfo, setDeviceInfo] = useState<DeviceInfo>(sensorService.getDeviceInfo());
@@ -66,8 +68,9 @@ export function App() {
     return () => clearInterval(timer);
   }, []);
 
-  // 1. Fetch initial data from Supabase
-  const loadCloudData = useCallback(async () => {
+  // 1. Fetch data from Supabase
+  const loadCloudData = useCallback(async (showLoading = false) => {
+    if (showLoading) setIsLoading(true);
     try {
       // Fetch settings first
       const dbSettings = await fetchDeviceSettings();
@@ -90,7 +93,7 @@ export function App() {
       // Select default device
       if (overview.devices.length > 0) {
         setSelectedDeviceId((prev) => {
-          if (prev && overview.devices.some((d) => d.id === prev)) {
+          if (prev && overview.devices.some((d) => areDeviceIdsEqual(d.id, prev))) {
             return prev;
           }
           // Prioritize device with active alert or online device
@@ -113,7 +116,7 @@ export function App() {
     } catch (err) {
       console.warn('[App] Failed to load data from Supabase:', err);
     } finally {
-      setIsLoading(false);
+      if (showLoading) setIsLoading(false);
       setIsRefreshing(false);
     }
   }, []);
@@ -127,45 +130,47 @@ export function App() {
         setReadingsHistory(history);
         const latest = history[history.length - 1];
         setReading(latest);
-
-        // Update local device info display
-        const targetDev = devices.find((d) => d.id === selectedDeviceId);
-        if (targetDev) {
-          setDeviceInfo({
-            id: targetDev.id,
-            name: targetDev.name,
-            location: targetDev.location,
-            deviceType: targetDev.device_type,
-            connectionType: targetDev.connection_type as any,
-            baudRate: 9600,
-            lastSeenAt: targetDev.last_seen,
-            status: targetDev.isOnlineComputed ? 'connected' : 'disconnected',
-          });
-        }
-      } else {
-        setReadingsHistory([]);
-        setReading(null);
       }
     });
-  }, [selectedDeviceId, devices]);
+  }, [selectedDeviceId]);
 
-  // 3. Initial load & Supabase Realtime setup
+  // Keep local device info display synchronized with selected device
   useEffect(() => {
-    loadCloudData();
+    const targetDev = devices.find((d) => areDeviceIdsEqual(d.id, selectedDeviceId)) || devices[0];
+    if (targetDev) {
+      setDeviceInfo({
+        id: targetDev.id,
+        name: targetDev.name,
+        location: targetDev.location,
+        deviceType: targetDev.device_type,
+        connectionType: targetDev.connection_type as any,
+        baudRate: 9600,
+        lastSeenAt: targetDev.last_seen,
+        status: targetDev.isOnlineComputed ? 'connected' : 'disconnected',
+      });
+    }
+  }, [devices, selectedDeviceId]);
+
+  // 3. Initial load, polling, & Supabase Realtime setup
+  useEffect(() => {
+    loadCloudData(true);
 
     // Subscribe to Supabase Realtime stream
     const unsubscribe = subscribeToRealtime({
       onReading: (newReading) => {
+        const gasVal = newReading.gas ?? newReading.gas_value ?? 0;
+        const readingDevId = newReading.deviceId || newReading.device_id || '';
+
         // Update device in list with latest reading & mark online
         setDevices((prev) =>
           prev.map((dev) => {
-            if (dev.id === newReading.deviceId || dev.id === newReading.device_id) {
+            if (areDeviceIdsEqual(dev.id, readingDevId)) {
               return {
                 ...dev,
                 last_seen: newReading.recorded_at || new Date().toISOString(),
                 status: 'online',
                 isOnlineComputed: true,
-                currentGas: newReading.gas,
+                currentGas: gasVal,
                 currentStatus: newReading.status,
                 latestReading: newReading,
               };
@@ -177,8 +182,7 @@ export function App() {
         // If the reading belongs to the actively selected device, update chart & gauge
         if (
           !selectedDeviceId ||
-          newReading.deviceId === selectedDeviceId ||
-          newReading.device_id === selectedDeviceId
+          areDeviceIdsEqual(readingDevId, selectedDeviceId)
         ) {
           setReading(newReading);
           setReadingsHistory((prev) => {
@@ -190,9 +194,26 @@ export function App() {
           alertEngine.processReading(newReading);
         }
       },
-      onDevice: () => {
-        // Reload device list
-        loadCloudData();
+      onDevice: (updatedRow) => {
+        if (updatedRow && updatedRow.id) {
+          setDevices((prev) =>
+            prev.map((d) => {
+              if (areDeviceIdsEqual(d.id, updatedRow.id)) {
+                const isOnline = isDeviceOnline(updatedRow.last_seen, heartbeatTimeout);
+                return {
+                  ...d,
+                  name: updatedRow.name || d.name,
+                  location: updatedRow.location || d.location,
+                  last_seen: updatedRow.last_seen,
+                  status: (isOnline ? 'online' : 'offline') as 'online' | 'offline',
+                  isOnlineComputed: isOnline,
+                };
+              }
+              return d;
+            })
+          );
+        }
+        loadCloudData(false);
       },
       onAlert: (newAlertRow) => {
         const mappedAlert: AlertRecord = {
@@ -235,12 +256,15 @@ export function App() {
       },
     });
 
-    // 4. Periodic heartbeat check (every 5 seconds) to dynamically update online/offline status
+    // 4. Precise 1-second heartbeat check:
+    // Derives device online status: last_seen <= 60s -> ONLINE, > 60s -> OFFLINE
     const heartbeatInterval = setInterval(() => {
-      setDevices((prev) =>
-        prev.map((d) => {
+      setDevices((prev) => {
+        let changed = false;
+        const next = prev.map((d): DeviceRecord => {
           const online = isDeviceOnline(d.last_seen, heartbeatTimeout);
-          if (online !== d.isOnlineComputed) {
+          if (online !== d.isOnlineComputed || (online && d.status !== 'online') || (!online && d.status !== 'offline')) {
+            changed = true;
             return {
               ...d,
               status: online ? 'online' : 'offline',
@@ -248,11 +272,17 @@ export function App() {
             };
           }
           return d;
-        })
-      );
-    }, 5000);
+        });
+        return changed ? next : prev;
+      });
+    }, 1000);
 
-    // 5. Sensor service hook for optional direct hardware (WebSerial)
+    // 5. Periodic cloud poll (every 3 seconds) for background telemetry sync
+    const pollInterval = setInterval(() => {
+      loadCloudData(false);
+    }, 3000);
+
+    // 6. Sensor service hook for optional direct hardware (WebSerial)
     sensorService.onReading((localReading) => {
       setReading(localReading);
       setReadingsHistory((prev) => [...prev.slice(-200), localReading]);
@@ -271,6 +301,7 @@ export function App() {
     return () => {
       unsubscribe();
       clearInterval(heartbeatInterval);
+      clearInterval(pollInterval);
     };
   }, [loadCloudData, heartbeatTimeout, selectedDeviceId]);
 
@@ -339,7 +370,7 @@ export function App() {
   }, [devices, activeAlertCount]);
 
   const selectedDevice = useMemo(() => {
-    return devices.find((d) => d.id === selectedDeviceId) || devices[0] || null;
+    return devices.find((d) => areDeviceIdsEqual(d.id, selectedDeviceId)) || devices[0] || null;
   }, [devices, selectedDeviceId]);
 
   const isConnected = selectedDevice ? selectedDevice.isOnlineComputed : false;

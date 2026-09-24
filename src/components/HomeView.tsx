@@ -31,6 +31,7 @@ import {
   DashboardStats, 
   SensorReading 
 } from '../types';
+import { isDeviceOnline, areDeviceIdsEqual } from '../lib/supabase';
 
 interface HomeViewProps {
   devices: DeviceRecord[];
@@ -82,8 +83,8 @@ export const HomeView: React.FC<HomeViewProps> = ({
     return () => clearInterval(timer);
   }, [reading?.timestamp, selectedDevice?.last_seen]);
 
-  const gasValue = reading?.gas ?? selectedDevice?.currentGas ?? 0;
-  const isOnline = selectedDevice ? selectedDevice.isOnlineComputed : false;
+  const isOnline = selectedDevice ? Boolean(selectedDevice.isOnlineComputed ?? isDeviceOnline(selectedDevice.last_seen)) : false;
+  const gasValue = isOnline ? (reading?.gas ?? selectedDevice?.currentGas ?? 0) : (selectedDevice?.currentGas ?? 0);
 
   // Determine safety state presentation
   const isDanger = alertState === 'ALERT_ACTIVE' || alertState === 'DANGER' || alertState === 'ACKNOWLEDGED' || (selectedDevice?.currentStatus === 'ALERT');
@@ -528,9 +529,9 @@ export const HomeView: React.FC<HomeViewProps> = ({
             {devices.length > 0 ? (
               <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
                 {devices.map((dev) => {
-                  const isDevOnline = dev.isOnlineComputed;
-                  const isSelected = dev.id === selectedDeviceId;
-                  const devGas = dev.currentGas ?? '--';
+                  const isDevOnline = dev.isOnlineComputed ?? isDeviceOnline(dev.last_seen);
+                  const isSelected = areDeviceIdsEqual(dev.id, selectedDeviceId);
+                  const devGas = isDevOnline ? (dev.currentGas ?? '--') : '--';
                   const isDevAlert = dev.currentStatus === 'ALERT';
 
                   return (
@@ -560,7 +561,7 @@ export const HomeView: React.FC<HomeViewProps> = ({
                         <div className={`text-xs font-mono font-bold ${
                           isDevAlert ? 'text-red-400' : isDevOnline ? 'text-slate-200' : 'text-slate-500'
                         }`}>
-                          {devGas} ADC
+                          {devGas !== '--' ? `${devGas} ADC` : '--'}
                         </div>
                         <div className="text-[10px] text-slate-500">
                           {isDevOnline ? 'Active' : 'Offline'}
