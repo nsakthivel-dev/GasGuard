@@ -80,7 +80,7 @@ export class AlertEngine {
         this.state = 'ALERT_ACTIVE';
         const newAlert: AlertRecord = {
           id: `alert-${now}-${Math.floor(Math.random() * 1000)}`,
-          deviceId: reading.deviceId || 'GAS-001',
+          deviceId: reading.deviceId || 'GAS-000001',
           type: 'GAS_LEAK',
           severity: 'danger',
           gasValue: gas,

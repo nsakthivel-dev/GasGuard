@@ -355,9 +355,9 @@ export const DeviceView: React.FC<DeviceViewProps> = ({
                         Gas Level
                       </span>
                       <span className={`text-xl font-black font-mono ${
-                        isAlert ? 'text-red-400' : isWarning ? 'text-amber-400' : isOnline ? 'text-slate-100' : 'text-slate-500'
+                        isAlert ? 'text-red-400' : isWarning ? 'text-amber-400' : isOnline ? 'text-slate-100' : 'text-slate-400'
                       }`}>
-                        {isOnline ? `${gas} ADC` : '--'}
+                        {dev.last_seen || dev.currentGas !== undefined ? `${dev.currentGas ?? '--'} ADC` : '--'}
                       </span>
                     </div>
 
@@ -366,9 +366,9 @@ export const DeviceView: React.FC<DeviceViewProps> = ({
                         Detection Status
                       </span>
                       <span className={`text-xs font-bold uppercase ${
-                        isAlert ? 'text-red-400' : isWarning ? 'text-amber-400' : isOnline ? 'text-emerald-400' : 'text-slate-500'
+                        isAlert ? 'text-red-400' : isWarning ? 'text-amber-400' : isOnline ? 'text-emerald-400' : 'text-slate-400'
                       }`}>
-                        {isOnline ? (dev.currentStatus || 'NORMAL') : 'OFFLINE'}
+                        {isOnline ? (dev.currentStatus || 'NORMAL') : 'COMMUNICATION LOST'}
                       </span>
                     </div>
                   </div>
@@ -451,67 +451,63 @@ export const DeviceView: React.FC<DeviceViewProps> = ({
       {/* ============================================================== */}
       {/* 4. MODAL: DEVICE DETAILS & REAL-TIME HISTORY CHART             */}
       {/* ============================================================== */}
-      {detailDevice && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md animate-fade-in">
-          <div className="bg-slate-900 border border-slate-800 rounded-3xl w-full max-w-3xl max-h-[90vh] overflow-y-auto p-6 shadow-2xl space-y-6">
-            {/* Modal Header */}
-            <div className="flex items-start justify-between pb-4 border-b border-slate-800">
-              <div className="flex items-center gap-3">
-                {(() => {
-                  const isDetailOnline = Boolean(detailDevice.isOnlineComputed ?? isDeviceOnline(detailDevice.last_seen));
-                  return (
-                    <>
-                      <div className={`w-12 h-12 rounded-2xl flex items-center justify-center font-bold ${
-                        isDetailOnline
-                          ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
-                          : 'bg-slate-800 text-slate-400'
-                      }`}>
-                        <Cpu className="w-6 h-6" />
+      {detailDevice && (() => {
+        const isDetailOnline = Boolean(detailDevice.isOnlineComputed ?? isDeviceOnline(detailDevice.last_seen));
+        return (
+            <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md animate-fade-in">
+              <div className="bg-slate-900 border border-slate-800 rounded-3xl w-full max-w-3xl max-h-[90vh] overflow-y-auto p-6 shadow-2xl space-y-6">
+                {/* Modal Header */}
+                <div className="flex items-start justify-between pb-4 border-b border-slate-800">
+                  <div className="flex items-center gap-3">
+                    <div className={`w-12 h-12 rounded-2xl flex items-center justify-center font-bold ${
+                      isDetailOnline
+                        ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+                        : 'bg-slate-800 text-slate-400'
+                    }`}>
+                      <Cpu className="w-6 h-6" />
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-mono font-bold text-amber-400">
+                          {detailDevice.id}
+                        </span>
+                        <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
+                          isDetailOnline ? 'bg-emerald-500/20 text-emerald-400' : 'bg-slate-800 text-slate-400'
+                        }`}>
+                          {isDetailOnline ? 'Online' : 'Offline'}
+                        </span>
                       </div>
-                      <div>
-                        <div className="flex items-center gap-2">
-                          <span className="text-xs font-mono font-bold text-amber-400">
-                            {detailDevice.id}
-                          </span>
-                          <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
-                            isDetailOnline ? 'bg-emerald-500/20 text-emerald-400' : 'bg-slate-800 text-slate-400'
-                          }`}>
-                            {isDetailOnline ? 'Online' : 'Offline'}
-                          </span>
-                        </div>
-                        <h3 className="font-black text-lg text-slate-100">{detailDevice.name}</h3>
-                        <p className="text-xs text-slate-400">{detailDevice.location}</p>
-                      </div>
-                    </>
-                  );
-                })()}
-              </div>
+                      <h3 className="font-black text-lg text-slate-100">{detailDevice.name}</h3>
+                      <p className="text-xs text-slate-400">{detailDevice.location}</p>
+                    </div>
+                  </div>
 
-              <button
-                onClick={() => setDetailDevice(null)}
-                className="p-2 text-slate-400 hover:text-slate-100 hover:bg-slate-800 rounded-xl"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
+                  <button
+                    onClick={() => setDetailDevice(null)}
+                    className="p-2 text-slate-400 hover:text-slate-100 hover:bg-slate-800 rounded-xl"
+                  >
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
 
-            {/* Quick Metrics */}
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
-              <div className="p-3 bg-slate-950/70 border border-slate-800 rounded-2xl space-y-1">
-                <span className="text-slate-500 block text-[10px] font-bold uppercase">Current Gas</span>
-                <span className="text-xl font-black font-mono text-slate-100">
-                  {detailDevice.currentGas ?? '--'} ADC
-                </span>
-              </div>
-              <div className="p-3 bg-slate-950/70 border border-slate-800 rounded-2xl space-y-1">
-                <span className="text-slate-500 block text-[10px] font-bold uppercase">Detection Status</span>
-                <span className={`text-base font-bold uppercase ${
-                  detailDevice.currentStatus === 'ALERT' ? 'text-red-400' :
-                  detailDevice.currentStatus === 'WARNING' ? 'text-amber-400' : 'text-emerald-400'
-                }`}>
-                  {detailDevice.currentStatus || 'NORMAL'}
-                </span>
-              </div>
+                {/* Quick Metrics */}
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+                  <div className="p-3 bg-slate-950/70 border border-slate-800 rounded-2xl space-y-1">
+                    <span className="text-slate-500 block text-[10px] font-bold uppercase">Current Gas</span>
+                    <span className="text-xl font-black font-mono text-slate-100">
+                      {detailDevice.currentGas !== undefined ? `${detailDevice.currentGas} ADC` : '--'}
+                    </span>
+                  </div>
+                  <div className="p-3 bg-slate-950/70 border border-slate-800 rounded-2xl space-y-1">
+                    <span className="text-slate-500 block text-[10px] font-bold uppercase">Detection Status</span>
+                    <span className={`text-base font-bold uppercase ${
+                      !isDetailOnline ? 'text-amber-400' :
+                      detailDevice.currentStatus === 'ALERT' ? 'text-red-400' :
+                      detailDevice.currentStatus === 'WARNING' ? 'text-amber-400' : 'text-emerald-400'
+                    }`}>
+                      {isDetailOnline ? (detailDevice.currentStatus || 'NORMAL') : 'COMMUNICATION LOST'}
+                    </span>
+                  </div>
               <div className="p-3 bg-slate-950/70 border border-slate-800 rounded-2xl space-y-1">
                 <span className="text-slate-500 block text-[10px] font-bold uppercase">Last Seen</span>
                 <span className="text-xs font-mono font-medium text-slate-300">
@@ -614,7 +610,8 @@ export const DeviceView: React.FC<DeviceViewProps> = ({
             </div>
           </div>
         </div>
-      )}
+          );
+        })()}
 
       {/* ============================================================== */}
       {/* 5. MODAL: ADD NEW DEVICE                                      */}

@@ -15,7 +15,7 @@ export class ESP32WifiDevice implements GasDevice {
   private errorCallbacks: ((err: Error) => void)[] = [];
   private statusCallbacks: ((status: DeviceStatus) => void)[] = [];
 
-  constructor(endpointUrl: string = 'ws://192.168.1.100/ws', deviceId: string = 'ESP32-GAS-001') {
+  constructor(endpointUrl: string = 'ws://192.168.1.100/ws', deviceId: string = 'GAS-000001') {
     this.endpointUrl = endpointUrl;
     this.deviceId = deviceId;
   }

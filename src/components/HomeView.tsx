@@ -84,12 +84,14 @@ export const HomeView: React.FC<HomeViewProps> = ({
   }, [reading?.timestamp, selectedDevice?.last_seen]);
 
   const isOnline = selectedDevice ? Boolean(selectedDevice.isOnlineComputed ?? isDeviceOnline(selectedDevice.last_seen)) : false;
-  const gasValue = isOnline ? (reading?.gas ?? selectedDevice?.currentGas ?? 0) : (selectedDevice?.currentGas ?? 0);
+  const hasEverReceivedTelemetry = Boolean(selectedDevice?.last_seen || reading);
+  const lastRecordedGas = selectedDevice?.currentGas ?? reading?.gas ?? reading?.gas_value;
+  const gasValue = isOnline ? (reading?.gas ?? reading?.gas_value ?? selectedDevice?.currentGas ?? 0) : (lastRecordedGas ?? 0);
 
-  // Determine safety state presentation
-  const isDanger = alertState === 'ALERT_ACTIVE' || alertState === 'DANGER' || alertState === 'ACKNOWLEDGED' || (selectedDevice?.currentStatus === 'ALERT');
-  const isWarning = alertState === 'WARNING' || (selectedDevice?.currentStatus === 'WARNING');
-  const isSafe = !isDanger && !isWarning && isOnline;
+  // Determine safety state presentation (never treat offline device as safe or normal)
+  const isDanger = isOnline && (alertState === 'ALERT_ACTIVE' || alertState === 'DANGER' || alertState === 'ACKNOWLEDGED' || (selectedDevice?.currentStatus === 'ALERT'));
+  const isWarning = isOnline && (alertState === 'WARNING' || (selectedDevice?.currentStatus === 'WARNING'));
+  const isSafe = isOnline && !isDanger && !isWarning;
 
   // Radial gauge angle calculation (0 to 1023 ADC mapped to 0% - 100%)
   const gaugePercent = Math.min(100, Math.max(0, (gasValue / 1000) * 100));
@@ -293,7 +295,7 @@ export const HomeView: React.FC<HomeViewProps> = ({
             <div className="flex flex-wrap items-center justify-center gap-2">
               <span className={`px-3.5 py-1 rounded-full text-xs font-bold tracking-wide uppercase flex items-center gap-2 border ${
                 !isOnline
-                  ? 'bg-slate-900 text-slate-400 border-slate-700'
+                  ? 'bg-slate-900 text-amber-400 border-amber-500/40'
                   : isDanger
                   ? 'bg-red-500/20 text-red-300 border-red-500/40 animate-pulse'
                   : isWarning
@@ -301,9 +303,9 @@ export const HomeView: React.FC<HomeViewProps> = ({
                   : 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
               }`}>
                 <span className={`w-2 h-2 rounded-full ${
-                  !isOnline ? 'bg-slate-500' : isDanger ? 'bg-red-400 animate-ping-slow' : isWarning ? 'bg-amber-400' : 'bg-emerald-400'
+                  !isOnline ? 'bg-amber-400' : isDanger ? 'bg-red-400 animate-ping-slow' : isWarning ? 'bg-amber-400' : 'bg-emerald-400'
                 }`} />
-                {!isOnline ? 'Node Standby / Offline' : isDanger ? 'Hazard Alert Active' : isWarning ? 'Elevated Warning' : 'Atmosphere Secure'}
+                {!isOnline ? 'Device communication lost' : isDanger ? 'Hazard Alert Active' : isWarning ? 'Elevated Warning' : 'Atmosphere Secure'}
               </span>
 
               {selectedDevice && (
@@ -374,15 +376,21 @@ export const HomeView: React.FC<HomeViewProps> = ({
               {/* Inside Gauge Reading */}
               <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
                 <span className="text-slate-500 text-[10px] font-bold uppercase tracking-widest">
-                  Gas Index
+                  {isOnline ? 'Gas Index' : hasEverReceivedTelemetry ? 'Last Reading' : 'Telemetry Status'}
                 </span>
                 <span className={`text-5xl sm:text-6xl font-black font-mono tracking-tight my-0.5 ${
-                  !isOnline ? 'text-slate-600' : isDanger ? 'text-red-400' : isWarning ? 'text-amber-400' : 'text-slate-100'
+                  !isOnline ? 'text-slate-400' : isDanger ? 'text-red-400' : isWarning ? 'text-amber-400' : 'text-slate-100'
                 }`}>
-                  {isOnline ? gasValue : '--'}
+                  {hasEverReceivedTelemetry ? (lastRecordedGas !== undefined ? lastRecordedGas : '--') : '--'}
                 </span>
                 <span className="text-[11px] font-semibold text-slate-400">
-                  {isOnline ? 'MQ-6 Raw ADC' : 'Waiting for Signal'}
+                  {!hasEverReceivedTelemetry
+                    ? 'Waiting for device telemetry'
+                    : isOnline
+                    ? 'MQ-6 Raw ADC'
+                    : secondsAgo !== null
+                    ? `Last seen ${secondsAgo}s ago (Offline)`
+                    : 'Last received (Offline)'}
                 </span>
               </div>
             </div>
@@ -391,7 +399,7 @@ export const HomeView: React.FC<HomeViewProps> = ({
             <div className="max-w-md space-y-1">
               <h3 className="text-lg sm:text-xl font-bold text-slate-100">
                 {!isOnline ? (
-                  selectedDevice ? `${selectedDevice.name} is Offline` : 'No Detector Configured'
+                  selectedDevice ? `${selectedDevice.name} Communication Lost` : 'Device Communication Lost'
                 ) : isDanger ? (
                   alertState === 'ACKNOWLEDGED' ? 'Hazard Alert Acknowledged' : 'Hazardous Combustible Gas Level'
                 ) : isWarning ? (
@@ -402,7 +410,9 @@ export const HomeView: React.FC<HomeViewProps> = ({
               </h3>
               <p className="text-xs text-slate-400 leading-relaxed">
                 {!isOnline
-                  ? 'ESP32 Wi-Fi node has not communicated recently. Check device power and Wi-Fi connection.'
+                  ? (!hasEverReceivedTelemetry
+                      ? 'Waiting for device telemetry from ESP32 node GAS-000001.'
+                      : `Device communication lost. Local Arduino & servo safety functions operate independently. Last reading: ${lastRecordedGas ?? '--'} ADC (${secondsAgo !== null ? `${secondsAgo}s ago` : 'previously'}).`)
                   : isDanger
                   ? 'Readings exceeded danger safety threshold. Evacuate area and shut off main valve.'
                   : isWarning
@@ -449,11 +459,13 @@ export const HomeView: React.FC<HomeViewProps> = ({
                 </div>
               </div>
               <div className="text-2xl font-black font-mono text-slate-100">
-                {isOnline ? gasValue : '--'}
+                {hasEverReceivedTelemetry ? (lastRecordedGas !== undefined ? lastRecordedGas : '--') : '--'}
               </div>
               <div className="flex items-center justify-between text-[11px] text-slate-500">
                 <span>Scale: 0-1023</span>
-                <span className="text-amber-400 font-medium">MQ-6 ADC</span>
+                <span className={isOnline ? "text-amber-400 font-medium" : "text-amber-500/80 font-medium"}>
+                  {isOnline ? 'MQ-6 ADC' : 'Last Reading (Offline)'}
+                </span>
               </div>
             </div>
 
@@ -620,7 +632,7 @@ export const HomeView: React.FC<HomeViewProps> = ({
               Live Sensor Telemetry Sparkline: {selectedDevice ? selectedDevice.id : 'No Node'}
             </span>
             <span className="text-[11px] text-slate-500 font-mono">
-              {isOnline ? 'Real-time Stream' : 'Disconnected'}
+              {isOnline ? 'Real-time Stream' : 'Communication Lost'}
             </span>
           </div>
 

@@ -75,9 +75,9 @@ export const AlarmOverlay: React.FC<AlarmOverlayProps> = ({
           <div>
             <span className="text-[11px] font-semibold uppercase text-slate-400">Device ID</span>
             <div className="text-xl sm:text-2xl font-bold text-slate-100 font-mono mt-1">
-              {activeAlert?.deviceId ?? 'GAS-001'}
+              {activeAlert?.deviceId ?? 'GAS-000001'}
             </div>
-            <span className="text-[10px] text-slate-400">Kitchen Gas Monitor</span>
+            <span className="text-[10px] text-slate-400">Kitchen</span>
           </div>
         </div>
 

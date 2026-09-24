@@ -15,8 +15,8 @@ class SensorService {
   private statusListeners: DeviceStatusListener[] = [];
   private stalenessTimer: number | null = null;
   private deviceInfo: DeviceInfo = {
-    id: 'GAS-001',
-    name: 'Kitchen Gas Monitor',
+    id: 'GAS-000001',
+    name: 'Kitchen',
     location: 'Kitchen / Utility Area',
     deviceType: 'ArduinoUno',
     connectionType: 'usb-serial',
